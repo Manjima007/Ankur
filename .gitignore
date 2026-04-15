@@ -1,2 +1,9 @@
-.env
-**/.env
+# Ignore the virtual environment
+venv/
+Ankur_backend/venv/
+ENV/
+env/
+
+# Ignore Python cache
+**/__pycache__/
+*.pyc
