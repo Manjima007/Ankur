@@ -132,7 +132,11 @@ export default function AuthPage() {
         setIsLogin(true);
       }
     } catch (err: unknown) {
-      const apiBase = api.defaults.baseURL || 'http://127.0.0.1:8000';
+      const apiBase =
+        process.env.NEXT_PUBLIC_API_URL ||
+        process.env.NEXT_PUBLIC_API_BASE_URL ||
+        api.defaults.baseURL ||
+        'http://127.0.0.1:8000';
       const errorMsg = axios.isAxiosError(err)
         ? err.response
           ? ((err.response.data?.detail as string) || `Request failed (${err.response.status}).`)

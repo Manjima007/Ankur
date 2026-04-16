@@ -13,6 +13,7 @@ cp .env.example .env.local
 Default value:
 
 ```env
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 ```
 
@@ -33,6 +34,7 @@ App runs on `http://localhost:3000`.
 4. Add environment variables:
 
 ```env
+NEXT_PUBLIC_API_URL=https://your-backend-url.onrender.com
 NEXT_PUBLIC_API_BASE_URL=https://your-backend-url.onrender.com
 NEXT_PUBLIC_VAPID_PUBLIC_KEY=your_public_vapid_key
 ```
