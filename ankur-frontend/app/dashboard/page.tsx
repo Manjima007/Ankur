@@ -18,6 +18,7 @@ import axios from "axios";
 import api, { getApiHealthState, subscribeApiHealth } from "../../lib/api";
 import { useI18n } from "../LanguageProvider";
 import { useAuth } from "../AuthProvider";
+import ProtectedRoute from "../ProtectedRoute";
 import { useHasMounted } from "../../lib/useHasMounted";
 
 type UserProfile = {
@@ -361,7 +362,7 @@ export default function DashboardPage() {
         // Wait for AuthProvider /api/me verification to resolve.
         return;
       }
-      window.location.href = "/";
+      window.location.href = "/login";
       return;
     }
 
@@ -398,7 +399,7 @@ export default function DashboardPage() {
 
     if (result.unauthorized) {
       authLogout();
-      window.location.href = "/";
+      window.location.href = "/login";
       return;
     }
 
@@ -479,7 +480,7 @@ export default function DashboardPage() {
 
   const logout = () => {
     authLogout();
-    window.location.href = "/";
+    window.location.href = "/login";
   };
 
   const useCurrentLocation = () => {
@@ -628,6 +629,7 @@ export default function DashboardPage() {
   }
 
   return (
+    <ProtectedRoute>
     <main className="min-h-screen bg-[#FAF7F2] px-4 pb-8 pt-24 text-[#3F3F3F] md:pt-20">
       <div className="mx-auto max-w-7xl space-y-6">
         <header className="rounded-lg border border-[#f0ede6] bg-white p-6 shadow-[0_4px_10px_rgba(0,0,0,0.05)] md:p-8">
@@ -1185,5 +1187,6 @@ export default function DashboardPage() {
       </div>
       </div>
     </main>
+    </ProtectedRoute>
   );
 }

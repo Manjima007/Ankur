@@ -14,27 +14,12 @@ function isStaticAsset(pathname: string): boolean {
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-
-  const sessionCookie = request.cookies.get("session_id");
-  const authTokenCookie = request.cookies.get("auth_token");
-  const hasAuthCookie = Boolean(sessionCookie?.value || authTokenCookie?.value);
-
-  // Crucial exclusion: never attempt to redirect / to / again.
-  if (pathname === "/") {
-    return NextResponse.next();
-  }
-
-  // Allow all public/static paths without auth redirect.
   if (isPublicPath(pathname) || isStaticAsset(pathname)) {
     return NextResponse.next();
   }
 
-  // Redirect only when auth/session cookie is completely missing.
-  if (!hasAuthCookie) {
-    const loginUrl = new URL("/", request.url);
-    return NextResponse.redirect(loginUrl);
-  }
-
+  // Client-side auth is based on localStorage token and ProtectedRoute checks.
+  // Avoid server-side cookie redirects here to prevent auth redirect loops.
   return NextResponse.next();
 }
 

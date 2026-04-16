@@ -126,15 +126,14 @@ api.interceptors.response.use(
     emitApiHealthState();
 
     if (status === 401 && typeof window !== 'undefined') {
-      const token = localStorage.getItem('ankur_token');
-      if (token) {
-        localStorage.removeItem('ankur_token');
-        localStorage.removeItem('ankur_user_id');
-        sessionStorage.removeItem('ankur_user_id');
-        window.dispatchEvent(new Event('ankur-auth-cleared'));
-        if (window.location.pathname !== '/') {
-          window.location.href = '/';
-        }
+      localStorage.removeItem('token');
+      localStorage.removeItem('ankur_token');
+      localStorage.removeItem('ankur_user_id');
+      localStorage.removeItem('ankur_user_cache');
+      sessionStorage.removeItem('ankur_user_id');
+      window.dispatchEvent(new Event('ankur-auth-cleared'));
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
       }
     }
 

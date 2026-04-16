@@ -1,6 +1,7 @@
 "use client";
 import Image from 'next/image';
 import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { ArrowRight, BellRing, Cross, MapPin, ShieldCheck, Waves } from 'lucide-react';
 import axios from 'axios';
@@ -24,8 +25,10 @@ const manualLocations = [
 export default function AuthPage() {
   const { t } = useI18n();
   const { isAuthenticated, isInitialized, login: setAuthSession } = useAuth();
+  const router = useRouter();
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [pendingDashboardRedirect, setPendingDashboardRedirect] = useState(false);
   const [coords, setCoords] = useState<{ lat: number; lon: number } | null>(null);
   const [geoError, setGeoError] = useState<string | null>(null);
   const [geoTimedOut, setGeoTimedOut] = useState(false);
@@ -38,9 +41,12 @@ export default function AuthPage() {
   useEffect(() => {
     if (!isInitialized) return;
     if (isAuthenticated) {
-      window.location.href = '/dashboard';
+      if (pendingDashboardRedirect) {
+        setPendingDashboardRedirect(false);
+      }
+      router.replace('/dashboard');
     }
-  }, [isAuthenticated, isInitialized]);
+  }, [isAuthenticated, isInitialized, pendingDashboardRedirect, router]);
 
   // Automatically fetch GPS coordinates when the page loads
   useEffect(() => {
@@ -96,7 +102,11 @@ export default function AuthPage() {
       throw new Error('Invalid login response from backend.');
     }
 
-    // Persist token immediately so all future requests use Authorization: Bearer <token>.
+    // Explicitly persist under both keys for compatibility with existing interceptor/auth paths.
+    localStorage.setItem('token', accessToken);
+    localStorage.setItem('ankur_token', accessToken);
+
+    // Persist token in context immediately so all future requests use Authorization: Bearer <token>.
     setAuthSession(accessToken, null);
     return accessToken;
   };
@@ -127,12 +137,12 @@ export default function AuthPage() {
         const user = await fetchUser(accessToken);
 
         if (user?.id) {
-          setAuthSession(accessToken, String(user.id));
+          setAuthSession(accessToken, String(user.id), user);
         } else {
           setAuthSession(accessToken, null);
         }
         alert(t("Login Successful! Moving to Dashboard..."));
-        window.location.href = '/dashboard';
+        setPendingDashboardRedirect(true);
       } else {
         const resolvedCoords = coords || (manualCoords ? { lat: manualCoords.lat, lon: manualCoords.lon } : null);
         if (!resolvedCoords) {
