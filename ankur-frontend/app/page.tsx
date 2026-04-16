@@ -23,7 +23,7 @@ const manualLocations = [
 
 export default function AuthPage() {
   const { t } = useI18n();
-  const { isAuthenticated, isInitialized, login } = useAuth();
+  const { isAuthenticated, isInitialized, login: setAuthSession } = useAuth();
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
   const [coords, setCoords] = useState<{ lat: number; lon: number } | null>(null);
@@ -83,6 +83,33 @@ export default function AuthPage() {
     return () => window.clearTimeout(timeoutId);
   }, []);
 
+  const login = async (email: string, password: string): Promise<string> => {
+    const loginForm = new FormData();
+    loginForm.append('username', email);
+    loginForm.append('password', password);
+
+    const response = await api.post('/login', loginForm);
+    const accessToken = response.data?.access_token as string | undefined;
+    const tokenType = (response.data?.token_type as string | undefined)?.toLowerCase();
+
+    if (!accessToken || tokenType !== 'bearer') {
+      throw new Error('Invalid login response from backend.');
+    }
+
+    // Persist token immediately so all future requests use Authorization: Bearer <token>.
+    setAuthSession(accessToken, null);
+    return accessToken;
+  };
+
+  const fetchUser = async (accessToken: string) => {
+    const response = await api.get('/api/me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    return response.data;
+  };
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoading(true);
@@ -96,18 +123,13 @@ export default function AuthPage() {
 
     try {
       if (isLogin) {
-        // --- LOGIN LOGIC ---
-        // FastAPI OAuth2 expects form-data for login
-        const loginForm = new FormData();
-        loginForm.append('username', email);
-        loginForm.append('password', payload.password as string);
-        
-        const res = await api.post('/login', loginForm);
-        const me = await api.get('/api/me');
-        if (me?.data?.id) {
-          login(res.data.access_token, String(me.data.id));
+        const accessToken = await login(email, payload.password as string);
+        const user = await fetchUser(accessToken);
+
+        if (user?.id) {
+          setAuthSession(accessToken, String(user.id));
         } else {
-          login(res.data.access_token, null);
+          setAuthSession(accessToken, null);
         }
         alert(t("Login Successful! Moving to Dashboard..."));
         window.location.href = '/dashboard';
