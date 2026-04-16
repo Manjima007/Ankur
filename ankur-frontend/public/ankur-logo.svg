@@ -1,0 +1,32 @@
+<svg width="512" height="640" viewBox="0 0 512 640" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="dropGrad" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(256 190) rotate(90) scale(170 140)">
+      <stop stop-color="#FF4B59"/>
+      <stop offset="1" stop-color="#C8102E"/>
+    </radialGradient>
+    <linearGradient id="rootGrad" x1="256" y1="300" x2="256" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8DE1FF"/>
+      <stop offset="1" stop-color="#37A6E8"/>
+    </linearGradient>
+  </defs>
+
+  <path d="M256 34C256 34 132 156 132 248C132 326 188 378 256 378C324 378 380 326 380 248C380 156 256 34 256 34Z" fill="url(#dropGrad)"/>
+
+  <path d="M256 112L318 270H286L273 236H239L226 270H194L256 112ZM247 212H265L256 186L247 212Z" fill="#F7FAFF"/>
+
+  <path d="M256 284C256 284 244 304 226 316C212 325 194 324 180 316C197 348 223 365 256 365C289 365 315 348 332 316C318 324 300 325 286 316C268 304 256 284 256 284Z" fill="#75D857"/>
+
+  <path d="M256 364V438" stroke="url(#rootGrad)" stroke-width="8" stroke-linecap="round"/>
+  <path d="M256 390L214 414" stroke="url(#rootGrad)" stroke-width="5" stroke-linecap="round"/>
+  <path d="M214 414L184 430" stroke="url(#rootGrad)" stroke-width="4" stroke-linecap="round"/>
+  <path d="M256 390L298 414" stroke="url(#rootGrad)" stroke-width="5" stroke-linecap="round"/>
+  <path d="M298 414L328 430" stroke="url(#rootGrad)" stroke-width="4" stroke-linecap="round"/>
+  <path d="M256 414L228 446" stroke="url(#rootGrad)" stroke-width="4" stroke-linecap="round"/>
+  <path d="M228 446L210 468" stroke="url(#rootGrad)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M256 414L284 446" stroke="url(#rootGrad)" stroke-width="4" stroke-linecap="round"/>
+  <path d="M284 446L302 468" stroke="url(#rootGrad)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M256 436L256 490" stroke="url(#rootGrad)" stroke-width="4" stroke-linecap="round"/>
+
+  <text x="256" y="585" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="76" font-weight="700" fill="#F8FAFC">Ankur</text>
+  <circle cx="396" cy="556" r="9" fill="#E71D36"/>
+</svg>

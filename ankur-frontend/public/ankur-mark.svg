@@ -1,0 +1,26 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="dropGrad" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(128 92) rotate(90) scale(86 70)">
+      <stop stop-color="#FF4B59"/>
+      <stop offset="1" stop-color="#C8102E"/>
+    </radialGradient>
+    <linearGradient id="rootGrad" x1="128" y1="150" x2="128" y2="236" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8DE1FF"/>
+      <stop offset="1" stop-color="#37A6E8"/>
+    </linearGradient>
+  </defs>
+
+  <path d="M128 14C128 14 66 75 66 121C66 159 94 185 128 185C162 185 190 159 190 121C190 75 128 14 128 14Z" fill="url(#dropGrad)"/>
+  <path d="M128 56L159 132H143L137 116H120L113 132H97L128 56ZM123 104H132L128 91L123 104Z" fill="#F7FAFF"/>
+  <path d="M128 138C128 138 122 148 113 154C106 159 97 158 90 154C98 170 111 178 128 178C145 178 158 170 166 154C159 158 150 159 143 154C134 148 128 138 128 138Z" fill="#75D857"/>
+
+  <path d="M128 178V216" stroke="url(#rootGrad)" stroke-width="5" stroke-linecap="round"/>
+  <path d="M128 191L107 203" stroke="url(#rootGrad)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M107 203L91 212" stroke="url(#rootGrad)" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M128 191L149 203" stroke="url(#rootGrad)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M149 203L165 212" stroke="url(#rootGrad)" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M128 203L114 219" stroke="url(#rootGrad)" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M114 219L104 230" stroke="url(#rootGrad)" stroke-width="2" stroke-linecap="round"/>
+  <path d="M128 203L142 219" stroke="url(#rootGrad)" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M142 219L152 230" stroke="url(#rootGrad)" stroke-width="2" stroke-linecap="round"/>
+</svg>

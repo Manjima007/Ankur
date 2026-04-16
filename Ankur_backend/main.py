@@ -1,12 +1,14 @@
-from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, UploadFile, File, Form, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 import os
+import socket
 import uuid
 import base64
 import hashlib
@@ -14,6 +16,7 @@ import hmac
 import secrets
 import bcrypt
 import json
+from urllib.parse import urlparse
 from twilio.rest import Client
 try:
     from pywebpush import webpush, WebPushException
@@ -39,9 +42,9 @@ def load_local_env_file() -> None:
 load_local_env_file()
 
 # --- 1. CONFIGURATION ---
-DB_URI = os.getenv("SUPABASE_URI")
+DB_URI = os.getenv("SUPABASE_POOLER_URI") or os.getenv("SUPABASE_URI")
 if not DB_URI:
-    raise RuntimeError("SUPABASE_URI is required")
+    raise RuntimeError("SUPABASE_POOLER_URI or SUPABASE_URI is required")
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
@@ -50,7 +53,11 @@ if not SECRET_KEY:
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440 
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
-CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", r"https?://[\w\.-]+(:\d+)?")
+CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", "")
+IS_PRODUCTION = os.getenv("PYTHON_ENV", "development").lower() == "production"
+AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "session_id")
+AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "true" if IS_PRODUCTION else "false").lower() == "true"
+AUTH_COOKIE_SAMESITE = os.getenv("AUTH_COOKIE_SAMESITE", "none" if IS_PRODUCTION else "lax").lower()
 
 # Twilio Config
 TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
@@ -69,16 +76,26 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "uploads")), name="uploads")
 
 # --- 2. CORS SETTINGS (Crucial for Frontend-Backend communication) ---
+cors_origins = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
+cors_origin_regex = CORS_ORIGIN_REGEX.strip() or None
+
+if "*" in cors_origins:
+    raise RuntimeError("CORS_ORIGINS cannot contain '*' when allow_credentials=True. Use explicit frontend origins.")
+
+if not cors_origins:
+    raise RuntimeError("CORS_ORIGINS must contain at least one explicit origin when allow_credentials=True.")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=cors_origins,
+    allow_origin_regex=cors_origin_regex,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 engine = create_engine(DB_URI, pool_pre_ping=True)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 
 PBKDF2_ITERATIONS = 210000
 REQUEST_STATUS_PENDING = "PENDING"
@@ -86,7 +103,7 @@ REQUEST_STATUS_ACCEPTED = "ACCEPTED"
 REQUEST_STATUS_COMPLETED = "COMPLETED"
 _is_production = os.getenv("PYTHON_ENV", "development").lower() == "production"
 VERIFICATION_WINDOW_SECONDS = int(
-    os.getenv("VERIFICATION_WINDOW_SECONDS", str(24 * 60 * 60 if _is_production else 60))
+    os.getenv("VERIFICATION_WINDOW_SECONDS", str(24 * 60 * 60 if IS_PRODUCTION else 60))
 )
 
 
@@ -182,8 +199,7 @@ def initialize_schema():
                 endpoint TEXT NOT NULL UNIQUE,
                 p256dh TEXT NOT NULL,
                 auth TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT NOW(),
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                created_at TIMESTAMP DEFAULT NOW()
             );
         """))
         conn.execute(text("""
@@ -243,7 +259,42 @@ def initialize_schema():
         conn.commit()
 
 
-initialize_schema()
+def build_db_connection_hint(db_uri: str, error: Exception) -> str:
+    lowered = str(error).lower()
+    if "could not translate host name" not in lowered:
+        return ""
+
+    try:
+        host = urlparse(db_uri).hostname
+    except Exception:
+        host = None
+
+    if not host:
+        return ""
+
+    has_ipv4 = True
+    try:
+        socket.getaddrinfo(host, None, socket.AF_INET)
+    except socket.gaierror:
+        has_ipv4 = False
+
+    if host.endswith(".supabase.co") and host.startswith("db.") and not has_ipv4:
+        return (
+            "Detected IPv6-only Supabase direct DB host in an IPv4-only environment. "
+            "Use SUPABASE_POOLER_URI with the Supabase Transaction Pooler connection string "
+            "(port 6543), then restart the backend."
+        )
+
+    return "Check the DB host value and DNS/network connectivity for this machine."
+
+
+try:
+    initialize_schema()
+except OperationalError as exc:
+    hint = build_db_connection_hint(DB_URI, exc)
+    if hint:
+        raise RuntimeError(f"Database connection failed during startup. {hint}") from exc
+    raise
 
 # --- 3. SCHEMAS ---
 class UserRegister(BaseModel):
@@ -290,11 +341,11 @@ class PushSubscription(BaseModel):
 
 class SubscribeRequest(BaseModel):
     subscription: PushSubscription
-    user_id: str
+    user_id: str | None = None
 
 
 class UnsubscribeRequest(BaseModel):
-    user_id: str
+    user_id: str | None = None
     endpoint: str
 
 # --- 4. SECURITY & ALERTS ---
@@ -304,9 +355,17 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def get_current_user(token: str = Depends(oauth2_scheme)) -> dict[str, str]:
+def get_current_user(request: Request, token: str | None = Depends(oauth2_scheme)) -> dict[str, str]:
+    resolved_token = token or request.cookies.get(AUTH_COOKIE_NAME)
+    if not resolved_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(resolved_token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
         if user_id is None:
             raise HTTPException(
@@ -355,43 +414,47 @@ def create_notification(conn, user_id: str, emergency_id: str | None, kind: str,
     )
 
 
-def dispatch_push_notifications(emergency_id: str, hospital_name: str, blood_type: str, latitude: float, longitude: float):
+def dispatch_push_notifications(
+    emergency_id: str,
+    hospital_name: str,
+    blood_type: str,
+    latitude: float,
+    longitude: float,
+    requester_id: str,
+):
     """
-    Find users within 10km radius with matching blood type and send push notifications.
+    Broadcast push notifications to all active registered users (except requester)
+    who have subscribed for push notifications.
     Runs in background task to avoid blocking request.
     """
     if not webpush or not VAPID_PRIVATE_KEY or "your_" in VAPID_PRIVATE_KEY:
         print(f"DEBUG: Push notification simulation for {blood_type} at {hospital_name}")
         return
 
-    # Query matching users within 10km radius
+        # Broadcast to all active users except the requester.
     query = text("""
         SELECT ps.id, ps.endpoint, ps.p256dh, ps.auth
         FROM push_subscriptions ps
-        JOIN users u ON ps.user_id = u.id
-        WHERE u.blood_type = :blood_type
-          AND u.is_active = TRUE
-          AND (6371 * ACOS(
-            COS(RADIANS(:lat)) * COS(RADIANS(ST_Y(u.location::geometry))) *
-            COS(RADIANS(ST_X(u.location::geometry)) - RADIANS(:lon)) +
-            SIN(RADIANS(:lat)) * SIN(RADIANS(ST_Y(u.location::geometry)))
-          )) <= 10
+                JOIN users u ON ps.user_id = CAST(u.id AS TEXT)
+                WHERE u.is_active = TRUE
+                    AND CAST(u.id AS TEXT) != :requester_id
     """)
 
     with engine.connect() as conn:
         subscriptions = conn.execute(query, {
-            "blood_type": blood_type,
-            "lat": latitude,
-            "lon": longitude
+            "requester_id": requester_id,
         }).fetchall()
 
     notification_payload = {
         "title": f"CRITICAL: {blood_type} Required",
         "body": f"A patient at {hospital_name} needs your help. Tap to see details.",
-        "icon": "/ankur_logo.png",
-        "badge": "/ankur_logo.png",
+        "icon": "/ankur_logo.jpeg",
+        "badge": "/ankur_logo.jpeg",
         "tag": f"ankur-{emergency_id}",
         "vibrate": [200, 100, 200],
+        "emergency_id": emergency_id,
+        "blood_type": blood_type,
+        "hospital": hospital_name,
         "data": {
             "emergencyId": emergency_id,
             "url": f"/dashboard?emergency={emergency_id}"
@@ -463,7 +526,7 @@ def register_user(user: UserRegister):
             raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
 
 @app.post("/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
+def login(response: Response, form_data: OAuth2PasswordRequestForm = Depends()):
     query = text("SELECT id, password FROM users WHERE email = :email")
     with engine.connect() as conn:
         user = conn.execute(query, {"email": form_data.username}).fetchone()
@@ -474,7 +537,26 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
                 headers={"WWW-Authenticate": "Bearer"},
             )
         token = create_access_token({"sub": str(user.id)})
+        response.set_cookie(
+            key=AUTH_COOKIE_NAME,
+            value=token,
+            httponly=True,
+            secure=AUTH_COOKIE_SECURE,
+            samesite=AUTH_COOKIE_SAMESITE,
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            path="/",
+        )
         return {"access_token": token, "token_type": "bearer"}
+
+
+@app.post("/logout")
+def logout(response: Response):
+    response.delete_cookie(
+        key=AUTH_COOKIE_NAME,
+        path="/",
+        samesite=AUTH_COOKIE_SAMESITE,
+    )
+    return {"status": "success", "message": "Logged out"}
 
 @app.post("/api/request-blood")
 async def request_blood(
@@ -577,7 +659,8 @@ async def request_blood(
         hospital_name,
         blood_type_needed,
         latitude,
-        longitude
+        longitude,
+        current_user["id"],
     )
         
     return {"status": "broadcasted", "donors_found": len(matched_phones), "emergency_id": emergency_id}
@@ -968,12 +1051,14 @@ def list_notifications(current_user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/notifications/subscribe")
-def subscribe_to_push_notifications(payload: SubscribeRequest):
+def subscribe_to_push_notifications(payload: SubscribeRequest, current_user: dict = Depends(get_current_user)):
     """
     Register a user's push notification subscription.
     Frontend sends VAPID-signed subscription object to store endpoint + keys.
     """
-    user_id = payload.user_id
+    user_id = payload.user_id or current_user["id"]
+    if user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Cannot subscribe for another user")
     endpoint = payload.subscription.endpoint
     p256dh = payload.subscription.keys.p256dh
     auth = payload.subscription.keys.auth
@@ -1001,11 +1086,13 @@ def subscribe_to_push_notifications(payload: SubscribeRequest):
 
 
 @app.post("/api/notifications/unsubscribe")
-def unsubscribe_from_push_notifications(payload: UnsubscribeRequest):
+def unsubscribe_from_push_notifications(payload: UnsubscribeRequest, current_user: dict = Depends(get_current_user)):
     """
     Remove a user's push notification subscription.
     """
-    user_id = payload.user_id
+    user_id = payload.user_id or current_user["id"]
+    if user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Cannot unsubscribe for another user")
     endpoint = payload.endpoint
 
     query = text("""

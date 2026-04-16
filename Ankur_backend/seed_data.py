@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, text, exc
 load_dotenv(override=True)
 
 API_KEY = os.getenv("DATA_GOV_API_KEY")
-DB_URI = os.getenv("SUPABASE_URI") 
+DB_URI = os.getenv("SUPABASE_POOLER_URI") or os.getenv("SUPABASE_URI")
 RESOURCE_ID = "fced6df9-a360-4e08-8ca0-f283fc74ce15"
 
 # Configuration
