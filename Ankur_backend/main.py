@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, Up
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
@@ -9,6 +10,7 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 import os
 import socket
+import re
 import uuid
 import base64
 import hashlib
@@ -53,7 +55,9 @@ if not SECRET_KEY:
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440 
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
-CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", "")
+CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", r"https://ankur-.*\.vercel\.app")
+# Keep this False while diagnosing wildcard/credentials related CORS failures.
+CORS_ALLOW_CREDENTIALS = os.getenv("CORS_ALLOW_CREDENTIALS", "false").lower() == "true"
 IS_PRODUCTION = os.getenv("PYTHON_ENV", "development").lower() == "production"
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "session_id")
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "true" if IS_PRODUCTION else "false").lower() == "true"
@@ -79,20 +83,73 @@ app.mount("/uploads", StaticFiles(directory=os.path.join(os.path.dirname(__file_
 cors_origins = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
 cors_origin_regex = CORS_ORIGIN_REGEX.strip() or None
 
+required_origins = [
+    "https://ankur-theta.vercel.app",
+    "http://localhost:3000",
+]
+for required_origin in required_origins:
+    if required_origin not in cors_origins:
+        cors_origins.append(required_origin)
+
 if "*" in cors_origins:
-    raise RuntimeError("CORS_ORIGINS cannot contain '*' when allow_credentials=True. Use explicit frontend origins.")
+    raise RuntimeError("CORS_ORIGINS cannot contain '*'. Use explicit frontend origins and/or CORS_ORIGIN_REGEX.")
 
 if not cors_origins:
-    raise RuntimeError("CORS_ORIGINS must contain at least one explicit origin when allow_credentials=True.")
+    raise RuntimeError("CORS_ORIGINS must contain at least one explicit origin.")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_origin_regex=cors_origin_regex,
-    allow_credentials=True,
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _origin_is_allowed(origin: str | None) -> bool:
+    if not origin:
+        return False
+    if origin in cors_origins:
+        return True
+    if cors_origin_regex:
+        try:
+            return bool(re.fullmatch(cors_origin_regex, origin))
+        except Exception:
+            return False
+    return False
+
+
+@app.middleware("http")
+async def dispatch_error_json_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        message = str(exc)
+        status_code = 500
+        detail = "Internal server error"
+
+        if "dispatch error" in message.lower():
+            detail = "Dispatch Error"
+
+        response = JSONResponse(
+            status_code=status_code,
+            content={
+                "status": "error",
+                "detail": detail,
+                "message": message,
+            },
+        )
+
+        # Attach CORS headers so transport/runtime crashes are not misreported as CORS failures.
+        request_origin = request.headers.get("origin")
+        if _origin_is_allowed(request_origin):
+            response.headers["Access-Control-Allow-Origin"] = request_origin
+            response.headers["Vary"] = "Origin"
+            response.headers["Access-Control-Allow-Methods"] = "*"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+
+        return response
 
 engine = create_engine(DB_URI, pool_pre_ping=True)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
@@ -101,6 +158,8 @@ PBKDF2_ITERATIONS = 210000
 REQUEST_STATUS_PENDING = "PENDING"
 REQUEST_STATUS_ACCEPTED = "ACCEPTED"
 REQUEST_STATUS_COMPLETED = "COMPLETED"
+REQUEST_STATUS_FILLED = "FILLED"
+MAX_ACCEPTANCES_PER_REQUEST = 4
 _is_production = os.getenv("PYTHON_ENV", "development").lower() == "production"
 VERIFICATION_WINDOW_SECONDS = int(
     os.getenv("VERIFICATION_WINDOW_SECONDS", str(24 * 60 * 60 if IS_PRODUCTION else 60))
@@ -207,6 +266,23 @@ def initialize_schema():
             ON push_subscriptions(user_id)
         """))
         conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS request_acceptances (
+                id BIGSERIAL PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                donor_user_id TEXT NOT NULL,
+                accepted_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(request_id, donor_user_id)
+            )
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_request_acceptances_request_id
+            ON request_acceptances(request_id)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_request_acceptances_donor_user_id
+            ON request_acceptances(donor_user_id)
+        """))
+        conn.execute(text("""
             UPDATE emergencies
             SET status = CASE
                 WHEN status ILIKE 'open' THEN :pending
@@ -230,6 +306,16 @@ def initialize_schema():
             UPDATE emergencies
             SET accepted_by_id = CAST(accepted_by_user_id AS TEXT)
             WHERE accepted_by_id IS NULL AND accepted_by_user_id IS NOT NULL;
+        """))
+        conn.execute(text("""
+            INSERT INTO request_acceptances (request_id, donor_user_id, accepted_at)
+            SELECT
+                e.id::text,
+                COALESCE(e.accepted_by_id, e.accepted_by_user_id::text),
+                COALESCE(e.accepted_at, e.created_at, NOW())
+            FROM emergencies e
+            WHERE COALESCE(e.accepted_by_id, e.accepted_by_user_id::text) IS NOT NULL
+            ON CONFLICT (request_id, donor_user_id) DO NOTHING
         """))
 
         # If notifications.user_id exists as BIGINT from older schema, migrate it to TEXT.
@@ -724,12 +810,20 @@ def list_emergencies(current_user: dict = Depends(get_current_user)):
             e.accepted_by_user_id,
             COALESCE(e.accepted_by_id, e.accepted_by_user_id::text) AS accepted_by_id,
             au.name AS accepted_by_name,
+            COALESCE(acc.acceptance_count, 0) AS acceptance_count,
+            CASE WHEN my_acc.request_id IS NOT NULL THEN TRUE ELSE FALSE END AS has_accepted,
             e.created_at,
             e.accepted_at,
             ST_Y(e.location::geometry) AS latitude,
             ST_X(e.location::geometry) AS longitude
         FROM emergencies e
                 LEFT JOIN users au ON CAST(au.id AS TEXT) = COALESCE(e.accepted_by_id, CAST(e.accepted_by_user_id AS TEXT))
+                LEFT JOIN (
+                    SELECT request_id, COUNT(*)::int AS acceptance_count
+                    FROM request_acceptances
+                    GROUP BY request_id
+                ) acc ON acc.request_id = e.id::text
+                LEFT JOIN request_acceptances my_acc ON my_acc.request_id = e.id::text AND my_acc.donor_user_id = :current_user_id
         WHERE e.status = :pending_status
           AND e.requested_by != :current_user_id
         ORDER BY e.created_at DESC, e.id DESC
@@ -778,12 +872,26 @@ def list_emergencies(current_user: dict = Depends(get_current_user)):
     emergencies = []
     for row in rows:
         is_compatible = can_donate_to(user.blood_type, row.blood_type_needed)
-        can_accept = row.status == REQUEST_STATUS_PENDING and is_compatible and eligible and row.requested_by != current_user["id"]
+        has_accepted = bool(row.has_accepted)
+        acceptance_count = int(row.acceptance_count or 0)
+        has_capacity = acceptance_count < MAX_ACCEPTANCES_PER_REQUEST
+        can_accept = (
+            row.status == REQUEST_STATUS_PENDING
+            and is_compatible
+            and eligible
+            and row.requested_by != current_user["id"]
+            and not has_accepted
+            and has_capacity
+        )
         reason = None
         if row.status != REQUEST_STATUS_PENDING:
             reason = "Already accepted"
         elif row.requested_by == current_user["id"]:
             reason = "Your own request"
+        elif has_accepted:
+            reason = "You already accepted this request"
+        elif not has_capacity:
+            reason = "Request already has enough donors"
         elif not is_compatible:
             reason = "Blood type not compatible"
         elif not eligible:
@@ -804,6 +912,9 @@ def list_emergencies(current_user: dict = Depends(get_current_user)):
             "accepted_by_user_id": str(row.accepted_by_user_id) if row.accepted_by_user_id is not None else None,
             "accepted_by_id": row.accepted_by_id,
             "accepted_by_name": row.accepted_by_name,
+            "acceptance_count": acceptance_count,
+            "donor_slots_remaining": max(0, MAX_ACCEPTANCES_PER_REQUEST - acceptance_count),
+            "has_accepted": has_accepted,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "accepted_at": row.accepted_at.isoformat() if row.accepted_at else None,
             "latitude": float(row.latitude) if row.latitude is not None else None,
@@ -833,16 +944,35 @@ def list_my_requests(current_user: dict = Depends(get_current_user)):
             e.accepted_by_user_id,
             COALESCE(e.accepted_by_id, e.accepted_by_user_id::text) AS accepted_by_id,
             au.name AS accepted_by_name,
+            COALESCE(acc.acceptance_count, 0) AS acceptance_count,
             e.created_at,
             e.accepted_at,
             ST_Y(e.location::geometry) AS latitude,
             ST_X(e.location::geometry) AS longitude
         FROM emergencies e
                 LEFT JOIN users au ON CAST(au.id AS TEXT) = COALESCE(e.accepted_by_id, CAST(e.accepted_by_user_id AS TEXT))
+                LEFT JOIN (
+                    SELECT request_id, COUNT(*)::int AS acceptance_count
+                    FROM request_acceptances
+                    GROUP BY request_id
+                ) acc ON acc.request_id = e.id::text
         WHERE e.requested_by = :current_user_id
           AND e.status != :completed_status
         ORDER BY e.created_at DESC, e.id DESC
         LIMIT 100
+    """)
+
+    donors_query = text("""
+        SELECT
+            ra.donor_user_id,
+            ra.accepted_at,
+            u.name,
+            u.phone,
+            u.blood_type
+        FROM request_acceptances ra
+        LEFT JOIN users u ON CAST(u.id AS TEXT) = ra.donor_user_id
+        WHERE ra.request_id = :request_id
+        ORDER BY ra.accepted_at DESC, ra.id DESC
     """)
 
     with engine.connect() as conn:
@@ -855,27 +985,43 @@ def list_my_requests(current_user: dict = Depends(get_current_user)):
         ).fetchall()
 
     items = []
-    for row in rows:
-        items.append({
-            "id": str(row.id),
-            "requested_by": str(row.requested_by),
-            "hospital_name": row.hospital_name,
-            "blood_type_needed": row.blood_type_needed,
-            "urgency": row.urgency,
-            "contact_email": row.contact_email,
-            "contact_phone": row.contact_phone,
-            "patient_age": row.patient_age,
-            "requisition_form_path": row.requisition_form_path,
-            "status": row.status,
-            "accepted_by": str(row.accepted_by_user_id) if row.accepted_by_user_id is not None else None,
-            "accepted_by_user_id": str(row.accepted_by_user_id) if row.accepted_by_user_id is not None else None,
-            "accepted_by_id": row.accepted_by_id,
-            "accepted_by_name": row.accepted_by_name,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            "accepted_at": row.accepted_at.isoformat() if row.accepted_at else None,
-            "latitude": float(row.latitude) if row.latitude is not None else None,
-            "longitude": float(row.longitude) if row.longitude is not None else None,
-        })
+    with engine.connect() as conn:
+        for row in rows:
+            donor_rows = conn.execute(donors_query, {"request_id": str(row.id)}).fetchall()
+            donors = [
+                {
+                    "user_id": str(donor_row.donor_user_id),
+                    "name": donor_row.name,
+                    "phone_number": donor_row.phone,
+                    "blood_group": donor_row.blood_type,
+                    "accepted_at": donor_row.accepted_at.isoformat() if donor_row.accepted_at else None,
+                }
+                for donor_row in donor_rows
+            ]
+
+            items.append({
+                "id": str(row.id),
+                "requested_by": str(row.requested_by),
+                "hospital_name": row.hospital_name,
+                "blood_type_needed": row.blood_type_needed,
+                "urgency": row.urgency,
+                "contact_email": row.contact_email,
+                "contact_phone": row.contact_phone,
+                "patient_age": row.patient_age,
+                "requisition_form_path": row.requisition_form_path,
+                "status": row.status,
+                "accepted_by": str(row.accepted_by_user_id) if row.accepted_by_user_id is not None else None,
+                "accepted_by_user_id": str(row.accepted_by_user_id) if row.accepted_by_user_id is not None else None,
+                "accepted_by_id": row.accepted_by_id,
+                "accepted_by_name": row.accepted_by_name,
+                "acceptance_count": int(row.acceptance_count or 0),
+                "donor_slots_remaining": max(0, MAX_ACCEPTANCES_PER_REQUEST - int(row.acceptance_count or 0)),
+                "donors": donors,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "accepted_at": row.accepted_at.isoformat() if row.accepted_at else None,
+                "latitude": float(row.latitude) if row.latitude is not None else None,
+                "longitude": float(row.longitude) if row.longitude is not None else None,
+            })
 
     return {"items": items}
 
@@ -911,8 +1057,7 @@ def list_blood_banks(query: str = ""):
     return {"items": items}
 
 
-@app.post("/api/accept-request")
-def accept_request(payload: AcceptRequest, current_user: dict = Depends(get_current_user)):
+def _accept_request_for_user(request_id: str, current_user: dict):
     """
     Testing override: donor eligibility cooldown is bypassed.
     """
@@ -925,12 +1070,29 @@ def accept_request(payload: AcceptRequest, current_user: dict = Depends(get_curr
         SELECT id, requested_by, blood_type_needed, status
         FROM emergencies
         WHERE id = :request_id
+        FOR UPDATE
     """)
-    accept_emergency_query = text("""
+    existing_acceptance_query = text("""
+        SELECT 1
+        FROM request_acceptances
+        WHERE request_id = :request_id
+          AND donor_user_id = :user_id
+        LIMIT 1
+    """)
+    acceptance_count_query = text("""
+        SELECT COUNT(*)::int
+        FROM request_acceptances
+        WHERE request_id = :request_id
+    """)
+    insert_acceptance_query = text("""
+        INSERT INTO request_acceptances (request_id, donor_user_id, accepted_at)
+        VALUES (:request_id, :user_id, NOW())
+    """)
+    update_emergency_after_accept_query = text("""
         UPDATE emergencies
-        SET status = :accepted_status,
+        SET status = :status,
             accepted_by_id = :accepted_by_id,
-            accepted_at = NOW()
+            accepted_at = COALESCE(accepted_at, NOW())
         WHERE id = :request_id
     """)
     update_donation_query = text("""
@@ -946,23 +1108,61 @@ def accept_request(payload: AcceptRequest, current_user: dict = Depends(get_curr
         if not donor.is_active:
             raise HTTPException(status_code=403, detail="Account is deactivated")
 
-        request_id = str(payload.emergency_id)
+        request_id = str(request_id)
         emergency = conn.execute(emergency_query, {"request_id": request_id}).fetchone()
         if not emergency:
             raise HTTPException(status_code=404, detail="Emergency request not found")
         if emergency.status != REQUEST_STATUS_PENDING:
-            raise HTTPException(status_code=409, detail="Request already accepted")
+            raise HTTPException(status_code=409, detail="Request is no longer active")
         if str(emergency.requested_by) == current_user["id"]:
             raise HTTPException(status_code=400, detail="You cannot accept your own request")
         if not can_donate_to(donor.blood_type, emergency.blood_type_needed):
             raise HTTPException(status_code=400, detail="Blood type not compatible")
 
+        already_accepted = conn.execute(
+            existing_acceptance_query,
+            {"request_id": request_id, "user_id": current_user["id"]},
+        ).fetchone()
+        if already_accepted:
+            raise HTTPException(status_code=409, detail="You already accepted this request")
+
+        acceptance_count = conn.execute(
+            acceptance_count_query,
+            {"request_id": request_id},
+        ).scalar() or 0
+        if acceptance_count >= MAX_ACCEPTANCES_PER_REQUEST:
+            conn.execute(
+                text("""
+                    UPDATE emergencies
+                    SET status = :filled_status
+                    WHERE id = :request_id
+                      AND status = :pending_status
+                """),
+                {
+                    "request_id": request_id,
+                    "filled_status": REQUEST_STATUS_FILLED,
+                    "pending_status": REQUEST_STATUS_PENDING,
+                },
+            )
+            conn.commit()
+            raise HTTPException(status_code=409, detail="Request already has enough donors")
+
         conn.execute(
-            accept_emergency_query,
+            insert_acceptance_query,
             {
-                "user_id": current_user["id"],
                 "request_id": request_id,
-                "accepted_status": REQUEST_STATUS_ACCEPTED,
+                "user_id": str(current_user["id"]),
+            },
+        )
+
+        updated_acceptance_count = acceptance_count + 1
+        next_status = REQUEST_STATUS_FILLED if updated_acceptance_count >= MAX_ACCEPTANCES_PER_REQUEST else REQUEST_STATUS_PENDING
+
+        conn.execute(
+            update_emergency_after_accept_query,
+            {
+                "request_id": request_id,
+                "status": next_status,
                 "accepted_by_id": str(current_user["id"]),
             },
         )
@@ -972,11 +1172,34 @@ def accept_request(payload: AcceptRequest, current_user: dict = Depends(get_curr
             user_id=str(emergency.requested_by),
             emergency_id=request_id,
             kind="REQUEST_ACCEPTED",
-            message=f"Your request has been accepted by {donor.name}. They should arrive soon.",
+            message=(
+                f"{donor.name} accepted your request. "
+                f"{updated_acceptance_count}/{MAX_ACCEPTANCES_PER_REQUEST} donors confirmed."
+            ),
         )
         conn.commit()
 
-    return {"status": "accepted", "message": "Request accepted successfully"}
+    return {
+        "status": "accepted",
+        "request_status": next_status,
+        "acceptance_count": updated_acceptance_count,
+        "remaining_slots": max(0, MAX_ACCEPTANCES_PER_REQUEST - updated_acceptance_count),
+        "message": (
+            "Request reached donor capacity and is now filled"
+            if next_status == REQUEST_STATUS_FILLED
+            else "Request accepted successfully"
+        ),
+    }
+
+
+@app.post("/api/accept-request")
+def accept_request(payload: AcceptRequest, current_user: dict = Depends(get_current_user)):
+    return _accept_request_for_user(str(payload.emergency_id), current_user)
+
+
+@app.post("/accept/{request_id}")
+def accept_request_by_path(request_id: str, current_user: dict = Depends(get_current_user)):
+    return _accept_request_for_user(str(request_id), current_user)
 
 
 @app.post("/api/complete-request")
@@ -996,8 +1219,8 @@ def complete_request(payload: CompleteRequest, current_user: dict = Depends(get_
             raise HTTPException(status_code=404, detail="Emergency request not found")
         if str(emergency.requested_by) != current_user["id"]:
             raise HTTPException(status_code=403, detail="Only the requester can mark this as completed")
-        if emergency.status != REQUEST_STATUS_ACCEPTED:
-            raise HTTPException(status_code=400, detail="Only accepted requests can be completed")
+        if emergency.status not in (REQUEST_STATUS_ACCEPTED, REQUEST_STATUS_FILLED):
+            raise HTTPException(status_code=400, detail="Only accepted or filled requests can be completed")
         if emergency.accepted_at is None:
             raise HTTPException(status_code=400, detail="Invalid accepted timestamp")
 

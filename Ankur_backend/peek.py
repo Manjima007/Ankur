@@ -1,14 +1,8 @@
 import requests
-import os
 
-api_key = os.getenv("DATA_GOV_API_KEY")
-if not api_key:
-    raise RuntimeError("DATA_GOV_API_KEY is required")
-
-url = f"https://api.data.gov.in/resource/fced6df9-a360-4e08-8ca0-f283fc74ce15?api-key={api_key}&format=json&limit=1"
+url = "https://api.data.gov.in/resource/fced6df9-a360-4e08-8ca0-f283fc74ce15?api-key=579b464db66ec23bdd0000014e8cc9744ff44dfb47f1668a341426e7&format=json&limit=1"
 print("Triggering Request...")
-response = requests.get(url, timeout=30)
-response.raise_for_status()
+response = requests.get(url)
 data = response.json()
 
 print("🚨 THE COLUMNS ARE: 🚨")

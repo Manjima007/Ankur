@@ -44,11 +44,14 @@ type EmergencyItem = {
   contact_phone: string | null;
   patient_age: number;
   requisition_form_path: string | null;
-  status: "PENDING" | "ACCEPTED" | "COMPLETED";
+  status: "PENDING" | "ACCEPTED" | "FILLED" | "COMPLETED";
   accepted_by: string | null;
   accepted_by_user_id?: string | null;
   accepted_by_id?: string | null;
   accepted_by_name?: string | null;
+  acceptance_count?: number;
+  donor_slots_remaining?: number;
+  has_accepted?: boolean;
   created_at: string | null;
   accepted_at: string | null;
   latitude: number | null;
@@ -56,6 +59,14 @@ type EmergencyItem = {
   is_compatible?: boolean;
   can_accept: boolean;
   accept_block_reason: string | null;
+};
+
+type RequestDonor = {
+  user_id: string;
+  name: string;
+  phone_number: string;
+  blood_group: string;
+  accepted_at: string | null;
 };
 
 type ApiNotification = {
@@ -67,7 +78,9 @@ type ApiNotification = {
   is_read: boolean;
 };
 
-type MyRequestItem = EmergencyItem;
+type MyRequestItem = EmergencyItem & {
+  donors?: RequestDonor[];
+};
 
 type BloodBank = {
   id: number;
@@ -171,6 +184,7 @@ export default function DashboardPage() {
   const [notices, setNotices] = useState<Notice[]>([]);
   const [backendNotifications, setBackendNotifications] = useState<ApiNotification[]>([]);
   const [myRequests, setMyRequests] = useState<MyRequestItem[]>([]);
+  const [expandedMyRequestIds, setExpandedMyRequestIds] = useState<string[]>([]);
   const [acceptingEmergencyIds, setAcceptingEmergencyIds] = useState<string[]>([]);
   const [optimisticAcceptedIds, setOptimisticAcceptedIds] = useState<string[]>([]);
   const [completingEmergencyIds, setCompletingEmergencyIds] = useState<string[]>([]);
@@ -322,7 +336,7 @@ export default function DashboardPage() {
 
     if (myRequestsResult.status === "fulfilled") {
       const rawMyRequests = myRequestsResult.value.data.items || [];
-      const nextMyRequests = rawMyRequests.map((item: Partial<EmergencyItem>) => ({
+      const nextMyRequests = rawMyRequests.map((item: Partial<MyRequestItem>) => ({
         ...item,
         can_accept: false,
         accept_block_reason: "Requester view",
@@ -546,9 +560,11 @@ export default function DashboardPage() {
         item.id === id
           ? {
               ...item,
-              status: "ACCEPTED",
+              has_accepted: true,
+              acceptance_count: (item.acceptance_count || 0) + 1,
+              donor_slots_remaining: Math.max(0, (item.donor_slots_remaining ?? 4) - 1),
               can_accept: false,
-              accept_block_reason: "Processing your acceptance...",
+              accept_block_reason: "You already accepted this request",
             }
           : item
       )
@@ -723,7 +739,7 @@ export default function DashboardPage() {
                     {(() => {
                       const isProcessing = acceptingEmergencyIds.includes(item.id);
                       const isCompleting = completingEmergencyIds.includes(item.id);
-                      const isJoined = optimisticAcceptedIds.includes(item.id) || item.status === "ACCEPTED";
+                      const isJoined = optimisticAcceptedIds.includes(item.id) || Boolean(item.has_accepted);
                       const remainingVerificationSeconds = remainingSecondsFromAccepted(item.accepted_at);
                       const canMarkDone =
                         item.status === "ACCEPTED" &&
@@ -743,6 +759,9 @@ export default function DashboardPage() {
                     </div>
                     <p className="mt-3 font-montserrat text-base font-bold text-[#3F3F3F]">{item.hospital_name}</p>
                     <p className="mt-1 text-xs text-[#3F3F3F] opacity-60">{t("Age")}: {item.patient_age} | {item.contact_email}</p>
+                    <p className="mt-1 text-xs text-[#3F3F3F] opacity-70">
+                      Donors confirmed: {item.acceptance_count ?? 0}/4
+                    </p>
                     {item.contact_phone && <p className="text-xs text-[#3F3F3F] opacity-60">{t("Contact Phone")}: {item.contact_phone}</p>}
                     {item.requisition_form_path && (
                       <p className="mt-2 text-xs">
@@ -812,7 +831,14 @@ export default function DashboardPage() {
                 {myRequests.map((item) => {
                   const isCompleting = completingEmergencyIds.includes(item.id);
                   const remainingVerificationSeconds = remainingSecondsFromAccepted(item.accepted_at);
-                  const canMarkDone = item.status === "ACCEPTED" && remainingVerificationSeconds <= 0;
+                  const canMarkDone = (item.status === "ACCEPTED" || item.status === "FILLED") && remainingVerificationSeconds <= 0;
+                  const donors = item.donors || [];
+                  const isExpanded = expandedMyRequestIds.includes(item.id);
+                  const toggleExpanded = () => {
+                    setExpandedMyRequestIds((prev) =>
+                      prev.includes(item.id) ? prev.filter((id) => id !== item.id) : [...prev, item.id]
+                    );
+                  };
 
                   return (
                     <div key={`my-${item.id}`} className={`rounded-md border-2 p-4 transition-all ${item.status === "PENDING" ? "border-[#9D1720]/50 bg-[#FEF2F2] ankur-request-pulse" : "border-[#f0ede6]"}`}>
@@ -826,22 +852,41 @@ export default function DashboardPage() {
                         <span className="font-semibold text-[#9D1720]">{item.status}</span>
                       </div>
                       <p className="mt-3 font-montserrat text-base font-bold text-[#3F3F3F]">{item.hospital_name}</p>
-                      {item.status === "ACCEPTED" && (
-                        <>
-                          <p className="mt-2 text-xs text-[#3F3F3F] opacity-70">
-                            {t("Accepted by")}: {item.accepted_by_name || item.accepted_by_id || t("Unknown donor")}
-                          </p>
+                      <p className="mt-2 text-xs text-[#3F3F3F] opacity-70">Donors confirmed: {item.acceptance_count ?? donors.length}/4</p>
+                      <div className="mt-3 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={toggleExpanded}
+                          className="rounded-md bg-[#FAF7F2] px-3 py-1.5 text-xs font-semibold text-[#9D1720] transition-colors hover:bg-[#f0ede6]"
+                        >
+                          {isExpanded ? "Hide donor details" : `View donor details (${donors.length})`}
+                        </button>
+                        {(item.status === "ACCEPTED" || item.status === "FILLED") && (
                           <p className="text-xs text-[#3F3F3F] opacity-70">
                             {remainingVerificationSeconds > 0
                               ? `Verify in ${formatCountdown(remainingVerificationSeconds)}`
                               : t("Ready to confirm.")}
                           </p>
-                        </>
+                        )}
+                      </div>
+                      {isExpanded && (
+                        <div className="mt-3 space-y-2 rounded-md border border-[#f0ede6] bg-white p-3">
+                          {donors.length === 0 && (
+                            <p className="text-xs text-[#3F3F3F] opacity-70">No donors have accepted yet.</p>
+                          )}
+                          {donors.map((donor) => (
+                            <div key={`${item.id}-${donor.user_id}`} className="rounded-md border border-[#f0ede6] bg-[#FAF7F2] p-2 text-xs text-[#3F3F3F]">
+                              <p className="font-semibold text-[#9D1720]">{donor.name || "Unknown donor"}</p>
+                              <p>Phone: {donor.phone_number || "N/A"}</p>
+                              <p>Blood Group: {donor.blood_group || "N/A"}</p>
+                            </div>
+                          ))}
+                        </div>
                       )}
                       {item.status === "PENDING" && (
                         <p className="mt-2 text-xs text-[#3F3F3F] opacity-70">{t("Broadcasting to donors...")}</p>
                       )}
-                      {item.status === "ACCEPTED" && (
+                      {(item.status === "ACCEPTED" || item.status === "FILLED") && (
                         <div className="mt-4 flex items-center justify-end">
                           <button
                             disabled={!canMarkDone || isCompleting}
