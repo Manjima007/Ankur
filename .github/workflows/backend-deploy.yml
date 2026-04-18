@@ -23,7 +23,16 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/Ankur/Ankur_backend
+            
+            # 1. Force update the code (The Refactor)
             git clean -fd
             git fetch origin main
             git reset --hard origin/main
-            /home/strucker/.nvm/versions/node/v20.20.2/bin/pm2
+            
+            # 2. Add NVM's Node and PM2 paths to the session
+            # This ensures PM2 can find the 'node' command
+            export NVM_DIR="/home/strucker/.nvm"
+            export PATH="$NVM_DIR/versions/node/v20.20.2/bin:$PATH"
+            
+            # 3. Restart the app using the direct path
+            /home/strucker/.nvm/versions/node/v20.20.2/bin/pm2 restart Ankur_Production || /home/strucker/.nvm/versions/node/v20.20.2/bin/pm2 restart all
