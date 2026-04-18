@@ -24,14 +24,17 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           command_timeout: 30m # Gives the connection more time to establish
-          script: |
+         script: |
             cd ~/Ankur/Ankur_backend
             
-            # Clean up server-side conflicts
+            # 1. Clean and Update code (This worked!)
             git clean -fd
             git fetch origin main
             git reset --hard origin/main
             
-            # Restart the app
-            export PATH=$PATH:/home/${{ secrets.SERVER_USER }}/.npm-global/bin
-            pm2 restart Ankur_Production || ~/.npm-global/bin/pm2 restart Ankur_Production || pm2 restart all
+            # 2. Find PM2 and Restart
+            # We use 'command -v' to find the exact path automatically
+            PM2_PATH=$(command -v pm2 || which pm2 || echo "/home/${{ secrets.SERVER_USER }}/.npm-global/bin/pm2")
+            
+            echo "Using PM2 at: $PM2_PATH"
+            $PM2_PATH restart Ankur_Production || $PM2_PATH restart all
