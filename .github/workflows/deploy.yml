@@ -27,7 +27,6 @@ jobs:
           filters: |
             backend:
               - 'Ankur_backend/**'
-              - 'render.yaml'
             frontend:
               - 'ankur-frontend/**'
 
@@ -72,21 +71,6 @@ jobs:
         working-directory: ankur-frontend
         run: npm run build
 
-  deploy-backend:
-    runs-on: ubuntu-latest
-    needs: [changes, quality-check]
-    if: needs.changes.outputs.backend == 'true' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    steps:
-      - name: Trigger Render deploy hook
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-        run: |
-          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
-            echo "Missing secret: RENDER_DEPLOY_HOOK_URL"
-            exit 1
-          fi
-          curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
-
   deploy-frontend:
     runs-on: ubuntu-latest
     needs: [changes, quality-check]
@@ -97,7 +81,9 @@ jobs:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
         run: |
           if [ -z "$VERCEL_DEPLOY_HOOK_URL" ]; then
-            echo "Missing secret: VERCEL_DEPLOY_HOOK_URL"
-            exit 1
+            echo "::warning::VERCEL_DEPLOY_HOOK_URL is missing. Skipping Vercel deploy hook."
+            exit 0
           fi
-          curl -fsS -X POST "$VERCEL_DEPLOY_HOOK_URL"
+          if ! curl -fsS -X POST "$VERCEL_DEPLOY_HOOK_URL"; then
+            echo "::warning::Vercel deploy hook request failed, but the workflow will continue."
+          fi
