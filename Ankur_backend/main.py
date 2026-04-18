@@ -2,7 +2,6 @@ from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, Up
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
@@ -10,7 +9,6 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 import os
 import socket
-import re
 import uuid
 import base64
 import hashlib
@@ -56,8 +54,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440 
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", r"https://ankur-.*\.vercel\.app")
-# Keep this False while diagnosing wildcard/credentials related CORS failures.
-CORS_ALLOW_CREDENTIALS = os.getenv("CORS_ALLOW_CREDENTIALS", "false").lower() == "true"
+CORS_ALLOW_CREDENTIALS = os.getenv("CORS_ALLOW_CREDENTIALS", "true").lower() == "true"
 IS_PRODUCTION = os.getenv("PYTHON_ENV", "development").lower() == "production"
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "session_id")
 AUTH_COOKIE_SECURE = os.getenv("AUTH_COOKIE_SECURE", "true" if IS_PRODUCTION else "false").lower() == "true"
@@ -75,6 +72,9 @@ VAPID_EMAIL = os.getenv("VAPID_EMAIL", "admin@ankur.health")
 
 app = FastAPI(title="Ankur Backend Engine")
 
+# Prevent implicit 307/308 slash redirects that can drop CORS headers in some proxy/browser flows.
+app.router.redirect_slashes = False
+
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads", "requisitions")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "uploads")), name="uploads")
@@ -84,7 +84,7 @@ cors_origins = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.s
 cors_origin_regex = CORS_ORIGIN_REGEX.strip() or None
 
 required_origins = [
-    "https://ankur-theta.vercel.app",
+    "https://ankur-frontend.vercel.app",
     "http://localhost:3000",
 ]
 for required_origin in required_origins:
@@ -104,52 +104,8 @@ app.add_middleware(
     allow_credentials=CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
-
-
-def _origin_is_allowed(origin: str | None) -> bool:
-    if not origin:
-        return False
-    if origin in cors_origins:
-        return True
-    if cors_origin_regex:
-        try:
-            return bool(re.fullmatch(cors_origin_regex, origin))
-        except Exception:
-            return False
-    return False
-
-
-@app.middleware("http")
-async def dispatch_error_json_middleware(request: Request, call_next):
-    try:
-        return await call_next(request)
-    except Exception as exc:
-        message = str(exc)
-        status_code = 500
-        detail = "Internal server error"
-
-        if "dispatch error" in message.lower():
-            detail = "Dispatch Error"
-
-        response = JSONResponse(
-            status_code=status_code,
-            content={
-                "status": "error",
-                "detail": detail,
-                "message": message,
-            },
-        )
-
-        # Attach CORS headers so transport/runtime crashes are not misreported as CORS failures.
-        request_origin = request.headers.get("origin")
-        if _origin_is_allowed(request_origin):
-            response.headers["Access-Control-Allow-Origin"] = request_origin
-            response.headers["Vary"] = "Origin"
-            response.headers["Access-Control-Allow-Methods"] = "*"
-            response.headers["Access-Control-Allow-Headers"] = "*"
-
-        return response
 
 engine = create_engine(DB_URI, pool_pre_ping=True)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
