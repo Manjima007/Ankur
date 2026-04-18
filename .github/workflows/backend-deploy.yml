@@ -10,36 +10,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 1. Connect to your private Tailscale network
       - name: Connect to Tailscale
         uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-      # 2. Deploy and Force Update
       - name: Deploy to Server
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          command_timeout: 30m # Gives the connection more time to establish
-         script: |
+          script: |
             cd ~/Ankur/Ankur_backend
-            
-            # 1. Update the code (This part is already working!)
             git clean -fd
             git fetch origin main
             git reset --hard origin/main
-            
-            # 2. Force the server to load the user's full path
-            # This is the magic line that fixes 'pm2: command not found'
-            source ~/.profile || source ~/.bashrc || echo "Profile not found"
-            
-            # 3. Try to find PM2 in all common locations
-            PM2_BIN=$(which pm2 || find /home -name "pm2" -type f -executable -print -quit || echo "pm2")
-            
-            echo "Found PM2 at: $PM2_BIN"
-            
-            # 4. Restart the app
-            $PM2_BIN restart Ankur_Production || $PM2_BIN restart all || echo "Manual restart needed"
+            export PATH=$PATH:/home/${{ secrets.SERVER_USER }}/.npm-global/bin:/home/${{ secrets.SERVER_USER }}/.local/bin
+            pm2 restart Ankur_Production || pm2 restart all
