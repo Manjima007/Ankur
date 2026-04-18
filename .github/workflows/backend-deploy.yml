@@ -26,5 +26,4 @@ jobs:
             git clean -fd
             git fetch origin main
             git reset --hard origin/main
-            export PATH=$PATH:/home/${{ secrets.SERVER_USER }}/.npm-global/bin:/home/${{ secrets.SERVER_USER }}/.local/bin
-            pm2 restart Ankur_Production || pm2 restart all
+            /home/strucker/.nvm/versions/node/v20.20.2/bin/pm2
