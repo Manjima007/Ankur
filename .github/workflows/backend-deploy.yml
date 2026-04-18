@@ -10,12 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # This is the "Magic" step that uses your new key
+      # 1. Connect to your private Tailscale network
       - name: Connect to Tailscale
         uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
+      # 2. Deploy and Force Update
       - name: Deploy to Server
         uses: appleboy/ssh-action@master
         with:
@@ -24,5 +25,12 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/Ankur/Ankur_backend
-            git pull origin main
-            pm2 restart Ankur_Production
+            
+            # Prevent 'local changes' error by forcing the server to match GitHub
+            git fetch origin main
+            git reset --hard origin/main
+            
+            # Restart the app using the full path to PM2 to avoid 'command not found'
+            # This covers both common install locations
+            export PATH=$PATH:/home/${{ secrets.SERVER_USER }}/.npm-global/bin
+            pm2 restart Ankur_Production || ~/.npm-global/bin/pm2 restart Ankur_Production || pm2 restart all
