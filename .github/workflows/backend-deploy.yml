@@ -23,14 +23,15 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 30m # Gives the connection more time to establish
           script: |
             cd ~/Ankur/Ankur_backend
             
-            # Prevent 'local changes' error by forcing the server to match GitHub
+            # Clean up server-side conflicts
+            git clean -fd
             git fetch origin main
             git reset --hard origin/main
             
-            # Restart the app using the full path to PM2 to avoid 'command not found'
-            # This covers both common install locations
+            # Restart the app
             export PATH=$PATH:/home/${{ secrets.SERVER_USER }}/.npm-global/bin
             pm2 restart Ankur_Production || ~/.npm-global/bin/pm2 restart Ankur_Production || pm2 restart all
