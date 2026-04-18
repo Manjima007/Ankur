@@ -9,5 +9,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Vercel Webhook
-        run: |
-          curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}" # Matches your GitHub secret exactly
+        run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK_ }}"
